@@ -32,6 +32,16 @@ extern "C" {
 #include <sys/timeb.h>
 
 /***** MACROS *****/
+typedef unsigned char           u8;     /**< UNSIGNED  8-bit data type */
+typedef unsigned short          u16;     /**< UNSIGNED 16-bit data type */
+typedef unsigned int            u32;     /**< UNSIGNED 32-bit data type */
+typedef unsigned long long      u64;     /**< UNSIGNED 64-bit data type */
+typedef signed char             s8;    /**<   SIGNED  8-bit data type */
+typedef signed short            s16;    /**<   SIGNED 16-bit data type */
+typedef signed int              s32;    /**<   SIGNED 32-bit data type */
+typedef signed long long        s64;    /**<   SIGNED 64-bit data type */
+
+
 #define RDKC_FAILURE            -1
 #define RDKC_SUCCESS            0
 
@@ -39,14 +49,13 @@ extern "C" {
 #define PWS_DEF_MEDIA_TYPE 		"Video"
 #define PWS_DEF_MEDIA_CATEGORY 		"Capture"
 #define PWS_DEF_MEDIA_ROLE 		"Camera"
-#define PWS_DEF_MEDIA_TYPE_FORMAT   	PWS_MEDIA_TYPE_FORMAT_VIDEO
-#define PWS_DEF_MEDIA_SUBTYPE_FORMAT 	PWS_MEDIA_SUBTYPE_FORMAT_H264
+#define PWS_DEF_MEDIA_TYPE_FORMAT	PWS_MEDIA_TYPE_FORMAT_VIDEO
+#define PWS_DEF_MEDIA_SUBTYPE_FORMAT	PWS_MEDIA_SUBTYPE_FORMAT_H264
 #define PWS_DEF_VIDEO_FORMAT 		PWS_VIDEO_FORMAT_ENCODED
 #define PWS_DEF_FRAME_WIDTH		640
 #define PWS_DEF_FRAME_HEIGHT 		480
 #define PWS_DEF_FRAMERATE 		25
 
-#define MAX_BUFQUEUE 30
 #define FRAME_SIZE   10
 
 /***** Enum Decclaration *****/
@@ -78,12 +87,13 @@ typedef enum pws_video_format
     PWS_VIDEO_FORMAT_ENCODED ,
 }PWS_VIDEO_FORMAT;
 
-typedef enum pws_app_type
+typedef enum pws_pic_type
 {
-    PWS_APP_TYPE_INVALID ,
-    PWS_APP_TYPE_RMS ,
-    PWS_APP_TYPE_CVR ,
-}PWS_APP_TYPE;
+    PWS_PIC_TYPE_INVALID ,
+    PWS_PIC_TYPE_IDR_FRAME ,
+    PWS_PIC_TYPE_I_FRAME ,
+    PWS_PIC_TYPE_P_FRAME
+}PWS_PIC_TYPE;
 
 /***** Structure Declaration *****/
 
@@ -96,12 +106,22 @@ struct pws_prioperties
     PWS_MEDIA_TYPE_FORMAT enMtypeformat;
     PWS_MEDIA_SUBTYPE_FORMAT enMsubtypeformat;
     PWS_VIDEO_FORMAT envideoformat;
-    int width;
-    int height;    
-    int framerate;
-    PWS_APP_TYPE enAppType;
-    int pws_fd[2];
+    u32 width;
+    u32 height;    
+    u32 framerate;
 };
+
+typedef struct pws_frameInfo
+{
+    s16 stream_id;              // buffer id (0~3)
+    u16 stream_type;            // 0 = Video H264 frame, 1 = Audio frame
+    u32 pic_type;		// 1 = IDR Frame 2 = I Frame 3 = P Frame
+    u8 *frame_ptr;             // same as guint8 *y_addr
+    u32 width;                  // Buffer Width
+    u32 height;                 // Buffer Height
+    u32 frame_size;             // FrameSize = Width * Height * 1.5 (Y + UV)
+    u32 frame_timestamp;        // Time stamp 8 bytes from GST
+}pws_frameInfo;
 
 struct pws_data {
     struct pw_main_loop *loop;
@@ -109,31 +129,17 @@ struct pws_data {
     struct spa_video_info format;
 
     struct pws_prioperties streamprop;
+
+    s32 pws_fd[2];
+
+    pws_frameInfo *intermediateFrameInfoH264;
+    bool isH264FrameReady;
 };
 
-typedef struct pws_frameInfo
-{
-    unsigned stream_id;              // buffer id (0~3)
-    unsigned stream_type;            // 0 = Video H264 frame, 1 = Audio frame
-    unsigned *frame_ptr;             // same as guint8 *y_addr
-    unsigned width;                  // Buffer Width
-    unsigned height;                 // Buffer Height
-    unsigned long long frame_size;             // FrameSize = Width * Height * 1.5 (Y + UV)
-    unsigned long long frame_timestamp;        // Time stamp 8 bytes from GST
-}pws_frameInfo;
-
 /***** Prototype *****/
-int pws_formatconversion( PWS_FORMAT enpwsformat, int formatval);
-int pws_init_videostream(struct pws_data *pwsdata);
-void pws_load_defaultstreamprop( struct pws_data *pwsdata);
-int pws_start_videostreaming( void *vptr );
-static void pws_on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param);
-static void pws_on_process(void *userdata);
-int pws_ReadVideoFramedata( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo);
-int pws_deletebuffer(pws_frameInfo *pstframeinfo);
-int pws_waitforvideoframe();
-void pws_sem_postvideoframe();
-int pws_terminateframe ( struct pws_data *pwsdata);
+int pws_StreamInit(struct pws_data *pwsdata);
+int pws_ReadFrame( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo);
+int pws_StreamClose( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo );
 
 #ifdef __cplusplus
 } /* extern "C" */

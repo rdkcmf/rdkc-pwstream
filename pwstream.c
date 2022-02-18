@@ -21,18 +21,32 @@
 #include "pwstream.h"
 #include "pipewire/pipewire.h"
 #include <pthread.h>
-#include <semaphore.h>
+#include <fcntl.h>
+
+/*RDK Logging */
+#include "rdk_debug.h"
 
 /***** Global Variable Declaration *****/
 
 pthread_t pws_getFrame;
 pthread_mutex_t pws_videoframelock;
-sem_t pws_applock;
+
+/***** Prototype *****/
+static int pws_FormatConversion( PWS_FORMAT enpwsformat, int formatval);
+static void pws_Load_DefaultStreamProp( struct pws_data *pwsdata);
+static int pws_StartStream( void *vptr );
+static void pws_OnParamChanged(void *userdata, uint32_t id, const struct spa_pod *param);
+static void pws_OnProcess(void *userdata);
+static u32 pws_GetH264PictureType( u8 *Framedata );
 
 /***** Function Definition *****/
 
-/* {{{ pws_load_defaultstreamprop() */
-int pws_formatconversion( PWS_FORMAT enpwsformat, int formatval)
+/** @description: Format Conversion from pwstream format to Pipewire format
+ *  @param[in]: pwsdata
+ *  @return: Video/Audio specific Format
+ */
+/* {{{ pws_FormatConversion() */
+static int pws_FormatConversion( PWS_FORMAT enpwsformat, int formatval)
 {
     if( PWS_FORMAT_MEDIA_TYPE == enpwsformat )
     {
@@ -62,45 +76,96 @@ int pws_formatconversion( PWS_FORMAT enpwsformat, int formatval)
 }
 /* }}} */
 
-/* {{{ pws_init_videostream() */
-int pws_init_videostream(struct pws_data *pwsdata)
+/** @description: Inilializing logs,video properties and memory allocation
+ *  @param[in]: pwsdata
+ *  @return: File Descriptor
+ */
+/* {{{ pws_StreamInit() */
+int pws_StreamInit(struct pws_data *pwsdata)
 {
     int ret = 0;
 
-    if( -1 == pipe(pwsdata->streamprop.pws_fd) )
+    /* RDK logger initialization */
+    rdk_logger_init("/etc/debug.ini");
+
+    if(NULL == pwsdata )
+        return RDKC_FAILURE;
+
+    pwsdata->isH264FrameReady = false;
+
+    if( NULL == pwsdata->intermediateFrameInfoH264)
     {
-        return -1;
+        pwsdata->intermediateFrameInfoH264 = (pws_frameInfo*)malloc(sizeof(pws_frameInfo));
+
+	if( NULL == pwsdata->intermediateFrameInfoH264 )
+	{
+	    RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) : Failed to allocate memory \n",__FILE__, __LINE__);
+	    return RDKC_FAILURE;
+	}
+	else
+	{
+	    memset(pwsdata->intermediateFrameInfoH264,0,sizeof(pws_frameInfo));
+	}
+
+	pwsdata->intermediateFrameInfoH264->frame_ptr = (u8*)malloc(sizeof(u8)*FRAME_SIZE);
+
+        if( NULL == pwsdata->intermediateFrameInfoH264->frame_ptr )
+        {
+            RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) : Failed to allocate memory \n",__FILE__, __LINE__);
+            return RDKC_FAILURE;
+        }
+        else
+        {
+            memset(pwsdata->intermediateFrameInfoH264->frame_ptr,0,(sizeof(u8)*FRAME_SIZE));
+        }
     }
 
-    pws_load_defaultstreamprop(pwsdata);
+    pws_Load_DefaultStreamProp(pwsdata);
+
+    memset (pwsdata->pws_fd, -1, 2 *sizeof(s32));
+
+    //create pipe and return its one end point(read fd)
+    if( -1 != pipe(pwsdata->pws_fd) )
+    {
+        if (fcntl(pwsdata->pws_fd[0], F_SETFL, O_NONBLOCK) < 0) {
+            RDK_LOG(RDK_LOG_WARN,"LOG.RDK.PWSTREAM","%s(%d) : Error in setting the read end of PIPE(%d<------%d) to non blocking mode\n", __FILE__, __LINE__, pwsdata->pws_fd[0], pwsdata->pws_fd[1]);
+        }
+        else {
+            RDK_LOG(RDK_LOG_INFO,"LOG.RDK.PWSTREAM","%s(%d) : Set the read end of PIPE(%d<------%d) to non blocking mode\n", __FILE__, __LINE__, pwsdata->pws_fd[0], pwsdata->pws_fd[1]);
+        }
+
+        if (fcntl(pwsdata->pws_fd[1], F_SETFL, O_NONBLOCK) < 0) {
+            RDK_LOG(RDK_LOG_WARN,"LOG.RDK.PWSTREAM","%s(%d) : Error in setting the write end of PIPE(%d<------%d) to non blocking mode\n", __FILE__, __LINE__, pwsdata->pws_fd[0], pwsdata->pws_fd[1]);
+        }
+        else {
+            RDK_LOG(RDK_LOG_INFO,"LOG.RDK.PWSTREAM","%s(%d) : Set the write end of PIPE(%d<------%d) to non blocking mode\n", __FILE__, __LINE__, pwsdata->pws_fd[0], pwsdata->pws_fd[1]);
+        }
+    }
 
     if(pthread_mutex_init(&pws_videoframelock, NULL) != 0)
     {
-        printf("%s(%d): Mutex init for queue failed...\n", __FILE__, __LINE__);
-        return -1;
+	RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) : FrameLock Mutex Init Failed \n",__FILE__, __LINE__);
+        return RDKC_FAILURE;
     }
 
-    if ( sem_init( &pws_applock, 0, 0 ) )
-    {
-        printf("%s(%d): Sem init failed...\n", __FILE__, __LINE__);
-        return -1;
-    }
-
-    ret = pthread_create( &pws_getFrame, NULL, pws_start_videostreaming, (void*)pwsdata );
+    ret = pthread_create( &pws_getFrame, NULL, pws_StartStream, (void*)pwsdata );
 
     if(ret != 0)
     {
-        printf("%s(%d): Failed to create start_Streaming thread,error_code: %d\n",
-                        __FILE__, __LINE__,ret);
+	RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) : Failed to create start_Streaming thread \n",__FILE__, __LINE__);
     }
     
-    return pwsdata->streamprop.pws_fd[0];
+    return pwsdata->pws_fd[0];
 
 }
 /* }}} */
 
-/* {{{ pws_load_defaultstreamprop() */
-void pws_load_defaultstreamprop( struct pws_data *pwsdata)
+/** @description: Update video/Audio properties in streamprop structure
+ *  @param[in]: pwsdata
+ *  @return: None
+ */
+/* {{{ pws_Load_DefaultStreamProp() */
+static void pws_Load_DefaultStreamProp( struct pws_data *pwsdata)
 {
     if( NULL == pwsdata )
         return;
@@ -119,17 +184,17 @@ void pws_load_defaultstreamprop( struct pws_data *pwsdata)
 
     if( PWS_MEDIA_TYPE_FORMAT_INVALID == pwsdata->streamprop.enMtypeformat )
         pwsdata->streamprop.enMtypeformat = PWS_DEF_MEDIA_TYPE_FORMAT;
-        pwsdata->streamprop.enMtypeformat = pws_formatconversion(PWS_FORMAT_MEDIA_TYPE,
+        pwsdata->streamprop.enMtypeformat = pws_FormatConversion(PWS_FORMAT_MEDIA_TYPE,
 		    					     pwsdata->streamprop.enMtypeformat);
 
     if( PWS_MEDIA_SUBTYPE_FORMAT_INVALID == pwsdata->streamprop.enMsubtypeformat )
         pwsdata->streamprop.enMsubtypeformat = PWS_DEF_MEDIA_SUBTYPE_FORMAT;
-        pwsdata->streamprop.enMsubtypeformat = pws_formatconversion(PWS_FORMAT_MEDIA_SUBTYPE,
+        pwsdata->streamprop.enMsubtypeformat = pws_FormatConversion(PWS_FORMAT_MEDIA_SUBTYPE,
                                                              pwsdata->streamprop.enMsubtypeformat);
 
     if( PWS_VIDEO_FORMAT_INVALID == pwsdata->streamprop.envideoformat )
         pwsdata->streamprop.envideoformat = PWS_DEF_VIDEO_FORMAT;
-        pwsdata->streamprop.envideoformat = pws_formatconversion(PWS_FORMAT_VIDEO,
+        pwsdata->streamprop.envideoformat = pws_FormatConversion(PWS_FORMAT_VIDEO,
                                                              pwsdata->streamprop.envideoformat);
 
     if( 0 == pwsdata->streamprop.width )
@@ -146,12 +211,16 @@ void pws_load_defaultstreamprop( struct pws_data *pwsdata)
 
 static const struct pw_stream_events pws_stream_events = {
         PW_VERSION_STREAM_EVENTS,
-        .param_changed = pws_on_param_changed,
-        .process = pws_on_process,
+        .param_changed = pws_OnParamChanged,
+        .process = pws_OnProcess,
 };
 
-/* {{{ pws_start_videostreaming() */
-int pws_start_videostreaming( void *vptr )
+/** @description: Start the read of video buffer with pipewire callback
+ *  @param[in]: pwsdata
+ *  @return: Macro- Success/Failure
+ */
+/* {{{ pws_StartStream() */
+static int pws_StartStream( void *vptr )
 {
     const struct spa_pod *params[1];
     uint8_t buffer[1024];
@@ -219,8 +288,12 @@ int pws_start_videostreaming( void *vptr )
 }
 /* }}} */
 
-/* {{{ pws_on_param_changed() */
-static void pws_on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param)
+/** @description: Find triggered video capture parameter
+ *  @param[in]: pwsdata and Parameter
+ *  @return: None
+ */
+/* {{{ pws_OnParamChanged() */
+static void pws_OnParamChanged(void *userdata, uint32_t id, const struct spa_pod *param)
 {
     struct pws_data *pwsdata = userdata;
     struct pw_stream *stream = pwsdata->stream;
@@ -278,63 +351,32 @@ static void pws_on_param_changed(void *userdata, uint32_t id, const struct spa_p
 }
 /* }}} */
 
-
-/* {{{ pws_terminateframe() */
-int pws_terminateframe ( struct pws_data *pwsdata)
-{
-    pthread_mutex_destroy(&pws_videoframelock);
-
-    return 0;
-}
-/* }}} */
-
-/* {{{ pws_on_process() */
-static void pws_on_process(void *userdata)
+/** @description: Dequeue video frame from pipewire instance
+ *  @param[in]: pwsdata
+ *  @return: None
+ */
+/* {{{ pws_OnProcess() */
+static void pws_OnProcess(void *userdata)
 {
     struct pws_data *pwsdata = NULL;
-
-    if(NULL == userdata )
-        return;
-
-    pwsdata = (struct pws_data *)userdata;
-
-    if( PWS_APP_TYPE_RMS == pwsdata->streamprop.enAppType)
-    {
-        if (pwsdata->streamprop.pws_fd != -1)
-        {
-            char wbuf[1] = {0};
-            write(pwsdata->streamprop.pws_fd[1], wbuf, sizeof(wbuf));
-        }
-    }
-
-    if( PWS_APP_TYPE_CVR == pwsdata->streamprop.enAppType)
-    {
-        pws_sem_postvideoframe();
-    }
-
-}
-/* }}} */
-
-/* {{{ pws_ReaVideodFramedata() */
-int pws_ReadVideoFramedata( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo)
-{
     struct pw_buffer *b;
     struct spa_buffer *buf;
     struct timeb timer_msec;
 
-    if( ( NULL == pwsdata ) || ( NULL == pstframeinfo ) )
-    {
+    if(NULL == userdata )
         return RDKC_FAILURE;
-    }
+
+    pwsdata = (struct pws_data *)userdata;
+
+    if( NULL == pwsdata->intermediateFrameInfoH264 )
+        return RDKC_FAILURE;
 
     if ( pthread_mutex_lock( &pws_videoframelock ) != 0 )
-    {
         return RDKC_FAILURE;
-    }
 
     if ((b = pw_stream_dequeue_buffer(pwsdata->stream)) == NULL)
     {
-        pw_log_warn("out of buffers: %m");
+	RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) : Out of Buffers \n",__FILE__, __LINE__);
         return RDKC_FAILURE;
     }
 
@@ -343,35 +385,115 @@ int pws_ReadVideoFramedata( struct pws_data *pwsdata, pws_frameInfo *pstframeinf
     if (buf->datas[0].data == NULL)
         return RDKC_FAILURE;
 
-    if (!ftime(&timer_msec))
+
+    /* Updating H264 frame details in intermediateFrameInfoH264 */
+    if(SPA_MEDIA_SUBTYPE_h264 == pwsdata->streamprop.enMsubtypeformat )
     {
-       pstframeinfo->frame_timestamp = ((long long int) timer_msec.time) * 1000ll +
-                                            (long long int) timer_msec.millitm;
-    }
-
-    pstframeinfo->frame_size = buf->datas[0].chunk->size;
-    pstframeinfo->frame_ptr = malloc( pstframeinfo->frame_size );
-
-    memcpy(pstframeinfo->frame_ptr,
-	   buf->datas[0].data,
-	   pstframeinfo->frame_size );
-
-    pstframeinfo->stream_id = 4;
-    pstframeinfo->stream_type = 1;
-    pstframeinfo->width = pwsdata->streamprop.width;
-    pstframeinfo->height = pwsdata->streamprop.height;
-
-    if( PWS_APP_TYPE_RMS == pwsdata->streamprop.enAppType)
-    {
-        // read one byte from pipe
-        if (pwsdata->streamprop.pws_fd[0] != -1) 
-	{
-            char rbuf[1] ={0};
-            read(pwsdata->streamprop.pws_fd[0], rbuf, 1);
+        if (!ftime(&timer_msec))
+        {
+           pwsdata->intermediateFrameInfoH264->frame_timestamp = ((long long int) timer_msec.time) * 1000ll +
+                                                			(long long int) timer_msec.millitm;
         }
+
+        pwsdata->intermediateFrameInfoH264->frame_size = buf->datas[0].chunk->size;
+
+        pwsdata->intermediateFrameInfoH264->frame_ptr = (u8*)realloc(pwsdata->intermediateFrameInfoH264->frame_ptr,
+		    						 pwsdata->intermediateFrameInfoH264->frame_size);
+
+	if(NULL != pwsdata->intermediateFrameInfoH264->frame_ptr)
+	{
+	    memset(pwsdata->intermediateFrameInfoH264->frame_ptr,0,pwsdata->intermediateFrameInfoH264->frame_size);
+
+	    memcpy(pwsdata->intermediateFrameInfoH264->frame_ptr,
+			    buf->datas[0].data,
+			    pwsdata->intermediateFrameInfoH264->frame_size);
+	}
+
+	pwsdata->intermediateFrameInfoH264->stream_type = 1;
+
+	pwsdata->intermediateFrameInfoH264->width = pwsdata->streamprop.width;
+	pwsdata->intermediateFrameInfoH264->height = pwsdata->streamprop.height;
+
+	pwsdata->intermediateFrameInfoH264->pic_type = pws_GetH264PictureType( pwsdata->intermediateFrameInfoH264->frame_ptr );
     }
+
+    if( ( true == pwsdata->isH264FrameReady) && ( -1 != pwsdata->pws_fd[0] ) )
+    {
+        char rbuf[1]={0};
+	read(pwsdata->pws_fd[0], rbuf, 1);
+    }
+
+    if(pwsdata->pws_fd[1] != -1) 
+    {
+        char wbuf[1] = {0};
+        write(pwsdata->pws_fd[1], wbuf, sizeof(wbuf));
+    }
+
+    pwsdata->isH264FrameReady = true;
 
     pw_stream_queue_buffer(pwsdata->stream, b);
+
+    pthread_mutex_unlock( &pws_videoframelock );
+}
+/* }}} */
+
+/** @description: Get video frame from pwstream instance
+ *  @param[in]: pwsdata and application frame info
+ *  @return: Macro - Success/Failure
+ */
+/* {{{ pws_ReadFrame() */
+int pws_ReadFrame( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo)
+{
+    if( ( NULL == pwsdata ) || ( NULL == pstframeinfo ) )
+        return RDKC_FAILURE;
+
+    if( !pwsdata->isH264FrameReady )
+    {
+        RDK_LOG(RDK_LOG_ERROR,"LOG.RDK.PWSTREAM","%s(%d) Frame Not Ready \n",__FILE__, __LINE__);
+	return RDKC_FAILURE;
+    }
+
+    if ( pthread_mutex_lock( &pws_videoframelock ) != 0 )
+        return RDKC_FAILURE;
+
+    pstframeinfo->stream_id = pwsdata->intermediateFrameInfoH264->stream_id;
+
+    pstframeinfo->stream_type = pwsdata->intermediateFrameInfoH264->stream_type;
+
+    pstframeinfo->pic_type = pwsdata->intermediateFrameInfoH264->pic_type;
+
+    pstframeinfo->width = pwsdata->intermediateFrameInfoH264->width;
+
+    pstframeinfo->height = pwsdata->intermediateFrameInfoH264->height;
+
+    pstframeinfo->frame_size = pwsdata->intermediateFrameInfoH264->frame_size;
+
+    pstframeinfo->frame_timestamp = pwsdata->intermediateFrameInfoH264->frame_timestamp;
+
+    if( NULL == pstframeinfo->frame_ptr )
+    {
+       pstframeinfo->frame_ptr  = (u8*)malloc(pstframeinfo->frame_size);
+    }
+    else
+    {
+        pstframeinfo->frame_ptr  = (u8*)realloc( pstframeinfo->frame_ptr, pstframeinfo->frame_size);
+    }
+
+    memset( pstframeinfo->frame_ptr,0,pstframeinfo->frame_size);
+
+    memcpy( pstframeinfo->frame_ptr,
+            pwsdata->intermediateFrameInfoH264->frame_ptr,
+	    pstframeinfo->frame_size);
+
+
+    // read one byte from pipe
+    if (pwsdata->pws_fd[0] != -1)
+    {
+        char rbuf[1] ={0};
+        read(pwsdata->pws_fd[0], rbuf, 1);
+    }
+
+    pwsdata->isH264FrameReady = false;
 
     pthread_mutex_unlock( &pws_videoframelock );
 
@@ -379,37 +501,76 @@ int pws_ReadVideoFramedata( struct pws_data *pwsdata, pws_frameInfo *pstframeinf
 }
 /* }}} */
 
-/* {{{ pws_deletebuffer() */
-int pws_deletebuffer(pws_frameInfo *pstframeinfo)
+/** @description: To release Frame buffer
+ *  @param[in]: pwsdata and application frame info
+ *  @return: Macro - Success/Failure
+ */
+/* {{{ pws_StreamClose() */
+int pws_StreamClose( struct pws_data *pwsdata, pws_frameInfo *pstframeinfo )
 {
+    if ( pthread_mutex_lock( &pws_videoframelock ) != 0 )
+        return RDKC_FAILURE;
+
+    if( NULL != pwsdata->intermediateFrameInfoH264 )
+    {
+        if( NULL != pwsdata->intermediateFrameInfoH264->frame_ptr )
+	{
+	    free( pwsdata->intermediateFrameInfoH264->frame_ptr );
+	    pwsdata->intermediateFrameInfoH264->frame_ptr = NULL;
+	}
+
+	free( pwsdata->intermediateFrameInfoH264 );
+        pwsdata->intermediateFrameInfoH264 = NULL;
+    }
+
+
     if( NULL != pstframeinfo )
     {
 	free(pstframeinfo->frame_ptr);
-	pstframeinfo->frame_ptr=NULL;
-
-	return RDKC_FAILURE;
+	pstframeinfo->frame_ptr = NULL;
     }
 
-    return RDKC_SUCCESS;
-}
-/* }}} */
-
-/* {{{ pws_sem_waitforvideoframe() */
-int pws_waitforvideoframe()
-{
-    if( sem_wait( &pws_applock ) )
+    if( ( true == pwsdata->isH264FrameReady ) && ( pwsdata->pws_fd[0] != -1 ) ) 
     {
-        return RDKC_FAILURE;
+	char rbuf[1]={0};
+	read(pwsdata->pws_fd[0], rbuf, 1);
+	pwsdata->isH264FrameReady = false;
     }
+
+    // cleanup the pipe fd
+    close( pwsdata->pws_fd[0] );
+    pwsdata->pws_fd[0] =-1;
+
+    close( pwsdata->pws_fd[1] );
+    pwsdata->pws_fd[1] =-1;
+
+    pthread_mutex_unlock( &pws_videoframelock );
 
     return RDKC_SUCCESS;
 }
 /* }}} */
 
-/* {{{ pws_sem_postvideoframe() */
-void pws_sem_postvideoframe()
+/** @description: Fetch Picture Type from frame data
+ *  @param[in]: Frame data
+ *  @return: Enum - Picture Type
+ */
+/* {{{ pws_GetH264PictureType() */
+static u32 pws_GetH264PictureType( u8 *Framedata )
 {
-      sem_post( &pws_applock );
+    PWS_PIC_TYPE enPicType = PWS_PIC_TYPE_INVALID;
+
+    if( NULL != Framedata )
+    {
+#ifdef PLATFORM_RPI
+        if( ( 0X27 == Framedata[4] ) || ( 0X28 == Framedata[4] ) )
+	    enPicType = PWS_PIC_TYPE_IDR_FRAME;
+	else if( 0X25 == Framedata[4] )
+            enPicType = PWS_PIC_TYPE_I_FRAME;
+        else if( 0X21 == Framedata[4] )
+	    enPicType = PWS_PIC_TYPE_P_FRAME;
+#endif
+    }
+    
+    return enPicType;
 }
 /* }}} */
-
