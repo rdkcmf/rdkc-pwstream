@@ -41,10 +41,6 @@ typedef signed short            s16;    /**<   SIGNED 16-bit data type */
 typedef signed int              s32;    /**<   SIGNED 32-bit data type */
 typedef signed long long        s64;    /**<   SIGNED 64-bit data type */
 
-
-#define RDKC_FAILURE            -1
-#define RDKC_SUCCESS            0
-
 #define PWS_DEF_STREAM_NAME 		"FRAME_RENDER"
 #define PWS_DEF_MEDIA_TYPE 		"Video"
 #define PWS_DEF_MEDIA_CATEGORY 		"Capture"
@@ -59,6 +55,16 @@ typedef signed long long        s64;    /**<   SIGNED 64-bit data type */
 #define FRAME_SIZE   10
 
 /***** Enum Decclaration *****/
+typedef enum pws_error
+{
+    PWS_FAILURE = -1 ,
+    PWS_SUCCESS = 0 ,
+    PWS_FRAME_NOT_READY = 1 ,
+    PWS_INVALID_PARAM ,
+    PWS_OPERATION_NOT_SUPPORTED ,
+    PWS_UNKNOWN ,    
+}PWS_ERROR;
+
 typedef enum pws_format
 {
     PWS_FORMAT_INVALID ,
@@ -69,22 +75,25 @@ typedef enum pws_format
 
 typedef enum pws_media_type_format
 {
-    PWS_MEDIA_TYPE_FORMAT_INVALID ,
+    PWS_MEDIA_TYPE_FORMAT_START ,
     PWS_MEDIA_TYPE_FORMAT_VIDEO ,
     PWS_MEDIA_TYPE_FORMAT_AUDIO ,
+    PWS_MEDIA_TYPE_FORMAT_END ,
 }PWS_MEDIA_TYPE_FORMAT;
 
 typedef enum pws_media_subtype_format
 {
-    PWS_MEDIA_SUBTYPE_FORMAT_INVALID ,
+    PWS_MEDIA_SUBTYPE_FORMAT_START ,
     PWS_MEDIA_SUBTYPE_FORMAT_RAW ,
     PWS_MEDIA_SUBTYPE_FORMAT_H264 ,
+    PWS_MEDIA_SUBTYPE_FORMAT_END ,
 }PWS_MEDIA_SUBTYPE_FORMAT;
 
 typedef enum pws_video_format
 {
-    PWS_VIDEO_FORMAT_INVALID ,
+    PWS_VIDEO_FORMAT_START ,
     PWS_VIDEO_FORMAT_ENCODED ,
+    PWS_VIDEO_FORMAT_END ,
 }PWS_VIDEO_FORMAT;
 
 typedef enum pws_pic_type
