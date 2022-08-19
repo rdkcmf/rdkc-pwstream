@@ -182,20 +182,29 @@ static void pws_Load_DefaultStreamProp( struct pws_data *pwsdata)
     if( NULL == pwsdata->streamprop.mediarole )
         pwsdata->streamprop.mediarole = PWS_DEF_MEDIA_ROLE;
 
-    if( !( PWS_MEDIA_TYPE_FORMAT_START < pwsdata->streamprop.enMtypeformat < PWS_MEDIA_TYPE_FORMAT_END ) )
+    if((PWS_MEDIA_TYPE_FORMAT_START >= pwsdata->streamprop.enMtypeformat) || \
+		(pwsdata->streamprop.enMtypeformat >= PWS_MEDIA_TYPE_FORMAT_END))
+    {
         pwsdata->streamprop.enMtypeformat = PWS_DEF_MEDIA_TYPE_FORMAT;
         pwsdata->streamprop.enMtypeformat = pws_FormatConversion(PWS_FORMAT_MEDIA_TYPE,
 		    					     pwsdata->streamprop.enMtypeformat);
+    }
 
-    if( !( PWS_MEDIA_SUBTYPE_FORMAT_START < pwsdata->streamprop.enMsubtypeformat < PWS_MEDIA_SUBTYPE_FORMAT_END ) )
+    if( ( PWS_MEDIA_SUBTYPE_FORMAT_START >= pwsdata->streamprop.enMsubtypeformat ) || \
+		(pwsdata->streamprop.enMsubtypeformat >= PWS_MEDIA_SUBTYPE_FORMAT_END ) )
+    {
         pwsdata->streamprop.enMsubtypeformat = PWS_DEF_MEDIA_SUBTYPE_FORMAT;
         pwsdata->streamprop.enMsubtypeformat = pws_FormatConversion(PWS_FORMAT_MEDIA_SUBTYPE,
                                                              pwsdata->streamprop.enMsubtypeformat);
+    }
 
-    if( !( PWS_VIDEO_FORMAT_START < pwsdata->streamprop.envideoformat < PWS_VIDEO_FORMAT_END ) )
+    if( ( PWS_VIDEO_FORMAT_START >= pwsdata->streamprop.envideoformat ) || \
+		( pwsdata->streamprop.envideoformat >= PWS_VIDEO_FORMAT_END ) )
+    {
         pwsdata->streamprop.envideoformat = PWS_DEF_VIDEO_FORMAT;
         pwsdata->streamprop.envideoformat = pws_FormatConversion(PWS_FORMAT_VIDEO,
                                                              pwsdata->streamprop.envideoformat);
+    }
 
     if( 0 == pwsdata->streamprop.width )
         pwsdata->streamprop.width = PWS_DEF_FRAME_WIDTH;
